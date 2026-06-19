@@ -5,10 +5,10 @@ from uuid import UUID
 
 class ProductShortItem(BaseModel):
     id: str
-    title: str
+    name: str  # <-- ИЗМЕНЕНО: title → name
     image: Optional[str] = None
-    price: int
-    in_stock: bool = True
+    min_price: int  # <-- ИЗМЕНЕНО: price → min_price
+    has_stock: bool = True  # <-- ИЗМЕНЕНО: in_stock → has_stock
     is_in_cart: bool = False
 
 

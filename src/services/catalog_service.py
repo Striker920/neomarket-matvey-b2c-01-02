@@ -1,7 +1,8 @@
 from src.services.b2b_client import b2b_client
 
 
-VALID_SORT_VALUES = ["rating", "popularity", "price_asc", "price_desc", "date_desc", "discount_desc"]
+# <-- ИЗМЕНЕНО: sort-enum согласно b2c/openapi.yaml
+VALID_SORT_VALUES = ["price_asc", "price_desc", "popularity", "new"]
 
 
 class CatalogService:
@@ -10,23 +11,23 @@ class CatalogService:
         limit: int = 20,
         offset: int = 0,
         category_id: str = None,
-        search: str = None,
+        q: str = None,  # <-- ИЗМЕНЕНО: search → q
         sort: str = None
     ) -> dict:
         if sort and sort not in VALID_SORT_VALUES:
             raise ValueError(f"Invalid sort parameter. Allowed: {', '.join(VALID_SORT_VALUES)}")
 
-        if search is not None:
-            if len(search) < 3:
+        if q is not None:  # <-- ИЗМЕНЕНО: search → q
+            if len(q) < 3:
                 raise ValueError("Search query must be at least 3 characters")
-            if len(search) > 255:
+            if len(q) > 255:
                 raise ValueError("Search query must be at most 255 characters")
 
         b2b_data = b2b_client.get_products(
             limit=limit,
             offset=offset,
             category=category_id,
-            search=search,
+            search=q,  # <-- ИЗМЕНЕНО: search → q (передаём в B2B как search)
             sort=sort
         )
 
@@ -34,7 +35,7 @@ class CatalogService:
         for item in b2b_data.get("items", []):
             skus = item.get("skus", [])
             min_price = min((s.get("price", 0) for s in skus if s.get("active_quantity", 0) > 0), default=0)
-            in_stock = any(s.get("active_quantity", 0) > 0 for s in skus)
+            has_stock = any(s.get("active_quantity", 0) > 0 for s in skus)  # <-- ИЗМЕНЕНО: in_stock → has_stock
             image = None
             for s in skus:
                 if s.get("image"):
@@ -45,10 +46,10 @@ class CatalogService:
 
             items.append({
                 "id": item.get("id"),
-                "title": item.get("title"),
+                "name": item.get("title"),  # <-- ИЗМЕНЕНО: title → name
                 "image": image,
-                "price": min_price,
-                "in_stock": in_stock,
+                "min_price": min_price,  # <-- ИЗМЕНЕНО: price → min_price
+                "has_stock": has_stock,  # <-- ИЗМЕНЕНО: in_stock → has_stock
                 "is_in_cart": False
             })
 
@@ -59,11 +60,11 @@ class CatalogService:
             "offset": offset
         }
 
-    def get_facets(self, category_id: str = None) -> dict:
+    def get_facets(self, category_id: str = None, q: str = None) -> dict:  # <-- ИЗМЕНЕНО: добавлен q
         b2b_data = b2b_client.get_products(
             limit=100,
             offset=0,
-            category=category_id
+            search=q,  # <-- ИЗМЕНЕНО: передаём q в B2B
         )
 
         brand_counts = {}

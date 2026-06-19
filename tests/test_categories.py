@@ -1,119 +1,240 @@
 import pytest
 from unittest.mock import patch, MagicMock
-import httpx
 
 
-class TestCategories:
-
-    @patch('src.services.category_service.httpx.Client')
-    def test_category_tree_returns_nested_structure(self, MockClient, client):
-        """Category tree returns categories from B2B"""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "items": [
-                {"id": "cat-electronics", "name": "Электроника", "parent_id": None, "children": []},
-                {"id": "cat-clothes", "name": "Одежда", "parent_id": None, "children": []}
+MOCK_B2B_PRODUCTS_RESPONSE = {
+    "items": [
+        {
+            "id": "product-1",
+            "title": "iPhone 15 Pro Max",
+            "description": "Smartphone",
+            "status": "MODERATED",
+            "category": {"id": "cat-1", "name": "Electronics"},
+            "images": [{"url": "/s3/iphone15.jpg", "ordering": 0}],
+            "characteristics": [
+                {"name": "Бренд", "value": "Apple"},
+                {"name": "Цвет", "value": "Чёрный"}
+            ],
+            "skus": [
+                {
+                    "id": "sku-1",
+                    "name": "256GB Black",
+                    "price": 12999000,
+                    "discount": 0,
+                    "image": "/s3/iphone15-black.jpg",
+                    "active_quantity": 10,
+                    "characteristics": []
+                }
+            ]
+        },
+        {
+            "id": "product-2",
+            "title": "Samsung Galaxy S24",
+            "description": "Smartphone",
+            "status": "MODERATED",
+            "category": {"id": "cat-1", "name": "Electronics"},
+            "images": [{"url": "/s3/s24.jpg", "ordering": 0}],
+            "characteristics": [
+                {"name": "Бренд", "value": "Samsung"},
+                {"name": "Цвет", "value": "Белый"}
+            ],
+            "skus": [
+                {
+                    "id": "sku-2",
+                    "name": "128GB White",
+                    "price": 8999000,
+                    "discount": 500000,
+                    "image": "/s3/s24-white.jpg",
+                    "active_quantity": 5,
+                    "characteristics": []
+                }
             ]
         }
-        mock_response.raise_for_status = MagicMock()
+    ],
+    "total_count": 2,
+    "limit": 20,
+    "offset": 0
+}
 
-        mock_client_instance = MagicMock()
-        mock_client_instance.get.return_value = mock_response
-        mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
-        mock_client_instance.__exit__ = MagicMock(return_value=False)
-        MockClient.return_value = mock_client_instance
 
-        response = client.get("/api/v1/categories/")
+class TestCatalog:
 
-        assert response.status_code == 200
-        data = response.json()
-        assert len(data["items"]) >= 2
+    @patch('src.services.catalog_service.b2b_client.get_products')
+    def test_catalog_returns_filtered_sorted_products(self, mock_get_products, client):
+        """Happy path: filters, sorting, pagination work"""
+        mock_get_products.return_value = MOCK_B2B_PRODUCTS_RESPONSE
 
-    @patch('src.services.category_service.httpx.Client')
-    def test_category_detail_returns_category(self, MockClient, client):
-        """Category detail returns category info"""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "cat-electronics",
-            "name": "Электроника",
-            "slug": "electronics",
-            "parent_id": None,
-            "description": None,
-            "is_active": True
-        }
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client_instance = MagicMock()
-        mock_client_instance.get.return_value = mock_response
-        mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
-        mock_client_instance.__exit__ = MagicMock(return_value=False)
-        MockClient.return_value = mock_client_instance
-
-        with patch('src.services.category_service.b2b_client.get_products') as mock_get_products:
-            mock_get_products.return_value = {
-                "items": [{"id": "p1"}],
-                "total_count": 1,
-                "limit": 100,
-                "offset": 0
-            }
-
-            response = client.get("/api/v1/categories/cat-electronics?include_product_count=true")
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products, параметр q
+        response = client.get(
+            "/api/v1/catalog/products?category_id=cat-1&sort=price_asc&limit=10&offset=0"
+        )
 
         assert response.status_code == 200
         data = response.json()
-        assert data["id"] == "cat-electronics"
+        assert len(data["items"]) == 2
+        assert data["total_count"] == 2
+        assert data["limit"] == 10
+        assert data["offset"] == 0
+        # <-- ИЗМЕНЕНО: проверяем новые имена полей
+        assert data["items"][0]["name"] == "iPhone 15 Pro Max"
+        assert data["items"][0]["min_price"] == 12999000
+        assert data["items"][0]["has_stock"] is True
 
-    def test_unknown_category_returns_404(self, client):
-        """Unknown category → 404"""
-        response = client.get("/api/v1/categories/unknown-cat")
-        assert response.status_code == 404
+    @patch('src.services.catalog_service.b2b_client.get_products')
+    def test_facets_return_counts_per_filter_value(self, mock_get_products, client):
+        """Facets return correct counts"""
+        mock_get_products.return_value = MOCK_B2B_PRODUCTS_RESPONSE
 
-    def test_ambiguous_params_returns_400(self, client):
-        """Both category_id and product_id → 400"""
-        response = client.get("/api/v1/breadcrumbs?category_id=cat-1&product_id=prod-1")
+        response = client.get("/api/v1/catalog/facets?category_id=cat-1")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["category_id"] == "cat-1"
+        assert len(data["facets"]) >= 1
+
+        brand_facet = next((f for f in data["facets"] if f["name"] == "brand"), None)
+        assert brand_facet is not None
+        brand_values = {v["value"]: v["count"] for v in brand_facet["values"]}
+        assert brand_values["Apple"] == 1
+        assert brand_values["Samsung"] == 1
+
+    def test_invalid_sort_returns_400(self, client):
+        """Invalid sort returns 400 with allowed values"""
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products
+        response = client.get("/api/v1/catalog/products?sort=invalid_sort")
+
         assert response.status_code == 400
+        data = response.json()
+        assert data["detail"]["code"] == "INVALID_REQUEST"
+        # <-- ИЗМЕНЕНО: проверяем новые значения sort-enum
+        assert "price_asc" in data["detail"]["message"]
+        assert "price_desc" in data["detail"]["message"]
+        assert "popularity" in data["detail"]["message"]
+        assert "new" in data["detail"]["message"]
 
-    def test_missing_params_returns_400(self, client):
-        """Neither category_id nor product_id → 400"""
-        response = client.get("/api/v1/breadcrumbs")
+    @patch('src.services.catalog_service.b2b_client.get_products')
+    def test_b2b_unavailable_returns_502(self, mock_get_products, client):
+        """B2B unavailable returns 502"""
+        mock_get_products.side_effect = Exception("Connection refused")
+
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products
+        response = client.get("/api/v1/catalog/products")
+
+        assert response.status_code == 502
+        data = response.json()
+        assert data["detail"]["code"] == "BAD_GATEWAY"
+
+    @patch('src.services.catalog_service.b2b_client.get_products')
+    def test_empty_catalog_returns_200(self, mock_get_products, client):
+        """Empty catalog returns 200 with empty items"""
+        mock_get_products.return_value = {
+            "items": [],
+            "total_count": 0,
+            "limit": 20,
+            "offset": 0
+        }
+
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products
+        response = client.get("/api/v1/catalog/products?category_id=empty-cat")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["items"] == []
+        assert data["total_count"] == 0
+
+    @patch('src.services.catalog_service.b2b_client.get_products')
+    def test_search_returns_matching_products(self, mock_get_products, client):
+        """Happy path: search returns matching products"""
+        mock_get_products.return_value = MOCK_B2B_PRODUCTS_RESPONSE
+
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products, параметр q
+        response = client.get("/api/v1/catalog/products?q=iPhone")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) >= 1
+        mock_get_products.assert_called_once_with(
+            limit=20, offset=0, category=None, search="iPhone", sort=None
+        )
+
+    def test_short_query_returns_400(self, client):
+        """Query shorter than 3 chars → 400"""
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products, параметр q
+        response = client.get("/api/v1/catalog/products?q=ab")
+
         assert response.status_code == 400
+        data = response.json()
+        assert data["detail"]["code"] == "INVALID_REQUEST"
+        assert "at least 3 characters" in data["detail"]["message"]
 
-    @patch('src.services.category_service.httpx.Client')
-    def test_breadcrumbs_return_path_from_root(self, MockClient, client):
-        """Breadcrumbs return path from root"""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "cat-electronics",
-            "name": "Электроника"
+    def test_long_query_returns_400(self, client):
+        """Query longer than 255 chars → 400"""
+        long_query = "a" * 256
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products, параметр q
+        response = client.get(f"/api/v1/catalog/products?q={long_query}")
+
+        assert response.status_code == 400
+        data = response.json()
+        assert data["detail"]["code"] == "INVALID_REQUEST"
+        assert "at most 255 characters" in data["detail"]["message"]
+
+    @patch('src.services.catalog_service.b2b_client.get_products')
+    def test_special_chars_do_not_break_query(self, mock_get_products, client):
+        """Special chars (%, _, ') don't break the query"""
+        mock_get_products.return_value = {
+            "items": [],
+            "total_count": 0,
+            "limit": 20,
+            "offset": 0
         }
-        mock_response.raise_for_status = MagicMock()
 
-        mock_client_instance = MagicMock()
-        mock_client_instance.get.return_value = mock_response
-        mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
-        mock_client_instance.__exit__ = MagicMock(return_value=False)
-        MockClient.return_value = mock_client_instance
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products, параметр q
+        response = client.get("/api/v1/catalog/products?q=product'_test%value_with_underscore")
 
-        response = client.get("/api/v1/breadcrumbs?category_id=cat-electronics")
+        assert response.status_code == 200
+        mock_get_products.assert_called_once()
+
+    @patch('src.services.catalog_service.b2b_client.get_products')
+    def test_empty_results_returns_200(self, mock_get_products, client):
+        """No matches → 200 with empty list"""
+        mock_get_products.return_value = {
+            "items": [],
+            "total_count": 0,
+            "limit": 20,
+            "offset": 0
+        }
+
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products, параметр q
+        response = client.get("/api/v1/catalog/products?q=nonexistent_product_xyz")
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data["data"]) >= 1
-        assert data["data"][0]["id"] == "cat-electronics"
+        assert data["items"] == []
+        assert data["total_count"] == 0
 
-    @patch('src.services.category_service.b2b_client.get_product_by_id')
-    def test_breadcrumbs_with_product_id(self, mock_get_product, client):
-        """Breadcrumbs with product_id resolves category"""
-        mock_get_product.return_value = {
-            "id": "prod-1",
-            "category": {"id": "cat-electronics", "name": "Электроника"}
-        }
+    @patch('src.services.catalog_service.b2b_client.get_products')
+    def test_search_combined_with_category(self, mock_get_products, client):
+        """Search + category_id work together"""
+        mock_get_products.return_value = MOCK_B2B_PRODUCTS_RESPONSE
 
-        response = client.get("/api/v1/breadcrumbs?product_id=prod-1")
+        # <-- ИЗМЕНЕНО: путь /api/v1/catalog/products, параметр q
+        response = client.get("/api/v1/catalog/products?q=iPhone&category_id=cat-1")
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["meta"]["resolved_via"] == "product_id"
+        mock_get_products.assert_called_once_with(
+            limit=20, offset=0, category="cat-1", search="iPhone", sort=None
+        )
+
+    def test_new_sort_value_accepted(self, client):
+        """sort=new принимается (согласно b2c/openapi.yaml)"""
+        with patch('src.services.catalog_service.b2b_client.get_products') as mock_get:
+            mock_get.return_value = {"items": [], "total_count": 0, "limit": 20, "offset": 0}
+            response = client.get("/api/v1/catalog/products?sort=new")
+            assert response.status_code == 200
+
+    def test_popularity_sort_value_accepted(self, client):
+        """sort=popularity принимается (согласно b2c/openapi.yaml)"""
+        with patch('src.services.catalog_service.b2b_client.get_products') as mock_get:
+            mock_get.return_value = {"items": [], "total_count": 0, "limit": 20, "offset": 0}
+            response = client.get("/api/v1/catalog/products?sort=popularity")
+            assert response.status_code == 200

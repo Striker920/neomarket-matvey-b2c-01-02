@@ -65,7 +65,7 @@ class TestCatalog:
         mock_get_products.return_value = MOCK_B2B_PRODUCTS_RESPONSE
 
         response = client.get(
-            "/api/v1/products?category_id=cat-1&sort=price_asc&limit=10&offset=0"
+            "/api/v1/catalog/products?category_id=cat-1&sort=price_asc&limit=10&offset=0"
         )
 
         assert response.status_code == 200
@@ -74,9 +74,9 @@ class TestCatalog:
         assert data["total_count"] == 2
         assert data["limit"] == 10
         assert data["offset"] == 0
-        assert data["items"][0]["title"] == "iPhone 15 Pro Max"
-        assert data["items"][0]["price"] == 12999000
-        assert data["items"][0]["in_stock"] is True
+        assert data["items"][0]["name"] == "iPhone 15 Pro Max"
+        assert data["items"][0]["min_price"] == 12999000
+        assert data["items"][0]["has_stock"] is True
 
     @patch('src.services.catalog_service.b2b_client.get_products')
     def test_facets_return_counts_per_filter_value(self, mock_get_products, client):
@@ -98,23 +98,27 @@ class TestCatalog:
 
     def test_invalid_sort_returns_400(self, client):
         """Invalid sort returns 400 with allowed values"""
-        response = client.get("/api/v1/products?sort=invalid_sort")
+        response = client.get("/api/v1/catalog/products?sort=invalid_sort")
 
         assert response.status_code == 400
         data = response.json()
+        # <-- ИСПРАВЛЕНО: кастомный exception handler возвращает без "detail"
         assert data["code"] == "INVALID_REQUEST"
-        assert "rating" in data["message"]
         assert "price_asc" in data["message"]
+        assert "price_desc" in data["message"]
+        assert "popularity" in data["message"]
+        assert "new" in data["message"]
 
     @patch('src.services.catalog_service.b2b_client.get_products')
     def test_b2b_unavailable_returns_502(self, mock_get_products, client):
         """B2B unavailable returns 502"""
         mock_get_products.side_effect = Exception("Connection refused")
 
-        response = client.get("/api/v1/products")
+        response = client.get("/api/v1/catalog/products")
 
         assert response.status_code == 502
         data = response.json()
+        # <-- ИСПРАВЛЕНО: кастомный exception handler возвращает без "detail"
         assert data["code"] == "BAD_GATEWAY"
 
     @patch('src.services.catalog_service.b2b_client.get_products')
@@ -127,7 +131,7 @@ class TestCatalog:
             "offset": 0
         }
 
-        response = client.get("/api/v1/products?category_id=empty-cat")
+        response = client.get("/api/v1/catalog/products?category_id=empty-cat")
 
         assert response.status_code == 200
         data = response.json()
@@ -139,7 +143,7 @@ class TestCatalog:
         """Happy path: search returns matching products"""
         mock_get_products.return_value = MOCK_B2B_PRODUCTS_RESPONSE
 
-        response = client.get("/api/v1/products?search=iPhone")
+        response = client.get("/api/v1/catalog/products?q=iPhone")
 
         assert response.status_code == 200
         data = response.json()
@@ -150,20 +154,22 @@ class TestCatalog:
 
     def test_short_query_returns_400(self, client):
         """Query shorter than 3 chars → 400"""
-        response = client.get("/api/v1/products?search=ab")
+        response = client.get("/api/v1/catalog/products?q=ab")
 
         assert response.status_code == 400
         data = response.json()
+        # <-- ИСПРАВЛЕНО: кастомный exception handler возвращает без "detail"
         assert data["code"] == "INVALID_REQUEST"
         assert "at least 3 characters" in data["message"]
 
     def test_long_query_returns_400(self, client):
         """Query longer than 255 chars → 400"""
         long_query = "a" * 256
-        response = client.get(f"/api/v1/products?search={long_query}")
+        response = client.get(f"/api/v1/catalog/products?q={long_query}")
 
         assert response.status_code == 400
         data = response.json()
+        # <-- ИСПРАВЛЕНО: кастомный exception handler возвращает без "detail"
         assert data["code"] == "INVALID_REQUEST"
         assert "at most 255 characters" in data["message"]
 
@@ -177,7 +183,7 @@ class TestCatalog:
             "offset": 0
         }
 
-        response = client.get("/api/v1/products?search=product'_test%value_with_underscore")
+        response = client.get("/api/v1/catalog/products?q=product'_test%value_with_underscore")
 
         assert response.status_code == 200
         mock_get_products.assert_called_once()
@@ -192,7 +198,7 @@ class TestCatalog:
             "offset": 0
         }
 
-        response = client.get("/api/v1/products?search=nonexistent_product_xyz")
+        response = client.get("/api/v1/catalog/products?q=nonexistent_product_xyz")
 
         assert response.status_code == 200
         data = response.json()
@@ -204,9 +210,23 @@ class TestCatalog:
         """Search + category_id work together"""
         mock_get_products.return_value = MOCK_B2B_PRODUCTS_RESPONSE
 
-        response = client.get("/api/v1/products?search=iPhone&category_id=cat-1")
+        response = client.get("/api/v1/catalog/products?q=iPhone&category_id=cat-1")
 
         assert response.status_code == 200
         mock_get_products.assert_called_once_with(
             limit=20, offset=0, category="cat-1", search="iPhone", sort=None
         )
+
+    def test_new_sort_value_accepted(self, client):
+        """sort=new принимается (согласно b2c/openapi.yaml)"""
+        with patch('src.services.catalog_service.b2b_client.get_products') as mock_get:
+            mock_get.return_value = {"items": [], "total_count": 0, "limit": 20, "offset": 0}
+            response = client.get("/api/v1/catalog/products?sort=new")
+            assert response.status_code == 200
+
+    def test_popularity_sort_value_accepted(self, client):
+        """sort=popularity принимается (согласно b2c/openapi.yaml)"""
+        with patch('src.services.catalog_service.b2b_client.get_products') as mock_get:
+            mock_get.return_value = {"items": [], "total_count": 0, "limit": 20, "offset": 0}
+            response = client.get("/api/v1/catalog/products?sort=popularity")
+            assert response.status_code == 200
